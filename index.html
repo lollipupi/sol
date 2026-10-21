@@ -325,8 +325,6 @@
 
   const {
     TOKEN_PROGRAM_ID,
-    MINT_SIZE,
-    ACCOUNT_SIZE,
     createInitializeMintInstruction,
     getAssociatedTokenAddress,
     createAssociatedTokenAccountInstruction,
@@ -343,23 +341,14 @@
   );
 
   // ═══════════════════════════════════════════════════════════
-  // 2. Constants
+  // 2. Constants (MINT_SIZE & ACCOUNT_SIZE fixed locally)
   // ═══════════════════════════════════════════════════════════
+  const MINT_SIZE = 82;
+  const ACCOUNT_SIZE = 165;
   const U64_MAX = 18446744073709551615n;
   const MIN_SOL_BUFFER = 0.05 * LAMPORTS_PER_SOL;
   const RPC_STORAGE_KEY = "spl_studio_custom_rpc";
 
-  // Metaplex Token Metadata structure:
-  //   key(1) + update_auth(32) + mint(32) + data + primary_sale(1)
-  //   + is_mutable(1) + edition_nonce(2) + token_standard(2)
-  //   + collection(1) + uses(1) + collection_details(1)
-  //   + programmable_config(1) = 679 bytes base
-  //
-  // data = name(4+len) + symbol(4+len) + uri(4+len)
-  //        + seller_fee(2) + creators(1 + 34*N)
-  //
-  // Space is reserved for maximum allowed lengths so the program
-  // never fails with "account data too small" during write.
   const METADATA_BASE_SIZE = 679;
   const MAX_NAME_BYTES = 32;
   const MAX_SYMBOL_BYTES = 10;
@@ -480,7 +469,6 @@
       if (u.protocol !== "https:") {
         return { endpoint: null, invalid: true, raw };
       }
-      // Remove trailing slashes from pathname only
       const cleanPath = u.pathname.replace(/\/+$/, "");
       const endpoint = u.origin + cleanPath + u.search;
       return { endpoint, invalid: false, raw };
@@ -726,7 +714,6 @@
     } catch (e) {
       if (e.message !== "TIMEOUT") throw e;
 
-      // On timeout, query on-chain status before assuming success.
       try {
         const status = await conn.getSignatureStatus(signature, {
           searchTransactionHistory: true,
@@ -767,8 +754,6 @@
     );
     if (!approved) throw new Error("Transaction cancelled by user.");
 
-    // Fetch a fresh blockhash immediately before signing to avoid expiry
-    // during the time the user spent reviewing the modal.
     const latest = await conn.getLatestBlockhash({ commitment: "confirmed" });
     tx.feePayer = state.wallet;
     tx.recentBlockhash = latest.blockhash;
@@ -819,21 +804,13 @@
   }
 
   function metadataSpace() {
-    // Reserved space for maximum allowed lengths. This guarantees the
-    // Metaplex program never runs out of account space while writing.
     return METADATA_MAX_SIZE;
   }
 
   function createMetadataInstruction(mint, authority, uri, name, symbol, isMutable) {
     const metadata = metadataPda(mint);
 
-    // CreateMetadataAccountArgs (Borsh):
-    //   name: String
-    //   symbol: String
-    //   uri: String
-    //   seller_fee_basis_points: u16
-    //   creators: Option<Vec<Creator>>   -> 1 byte (0 = None)
-    //   is_mutable: bool                 -> 1 byte
+    // ✅ اصلاح شده: اضافه کردن فیلدهای collection, uses و collection_details
     const data = concatUint8([
       new Uint8Array([33]),                    // discriminator
       borshString(name),
@@ -841,10 +818,12 @@
       borshString(uri),
       u16(0),                                  // seller_fee_basis_points
       new Uint8Array([0]),                     // creators: None
+      new Uint8Array([0]),                     // collection: None
+      new Uint8Array([0]),                     // uses: None
       new Uint8Array([isMutable ? 1 : 0]),     // is_mutable
+      new Uint8Array([0]),                     // collection_details: None
     ]);
 
-    // Metaplex CreateMetadataAccount expects exactly 7 accounts.
     return new TransactionInstruction({
       programId: METADATA_PROGRAM_ID,
       keys: [
@@ -1128,7 +1107,6 @@
     let sig2 = null;
 
     try {
-      // Step 1 — Mint account + Metaplex metadata
       setStatus(
         "createStatus",
         `Mint address generated:\n${mintAddress}\n` +
@@ -1136,7 +1114,6 @@
       );
       sig1 = await sendMintAndMetadata(conn, mint, { name, symbol, uri, decimals });
 
-      // Step 2 — ATA + initial mint
       setStatus(
         "createStatus",
         `Step 1 OK.\nMint: ${mintAddress}\n` +
@@ -1146,7 +1123,6 @@
       const { ata, sig: s2 } = await sendAtaAndMintTo(conn, mint, raw);
       sig2 = s2;
 
-      // Step 3 — Optional revoke
       setStatus(
         "createStatus",
         `Step 2 OK.\nATA: ${ata.toBase58()}\n` +
@@ -1167,7 +1143,6 @@
         sig3,
       };
     } catch (e) {
-      // Structural warning: mint account exists on-chain but flow failed.
       if (sig1 && !sig2) {
         e.orphanMint = mintAddress;
         e.step1Sig = sig1;
@@ -1193,7 +1168,6 @@
       throw new Error("Token account belongs to a different SPL program.");
     }
 
-    // Retry: account may be fresh and not yet fully propagated.
     let lastErr = null;
     for (let i = 0; i < 3; i++) {
       try {
