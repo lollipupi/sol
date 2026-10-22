@@ -1,3 +1,13 @@
+نسخه نهایی. تغییرات کلیدی نسبت به کد خودت:
+
+1. ۳ CDN جایگزین برای کتابخانهها (esm.sh → jsdelivr → esm.run) با fallback خودکار
+2. سایز metadata از ۹۲۱ به ۶۷۹ اصلاح شد (اجارهی اضافی حذف)
+3. تراکنش ۲ و ۳ ادغام شدن → فقط ۲ پاپآپ Phantom بهجای ۳
+4. Network mismatch فقط warning میشه، نه گیر کردن کاربر
+5. Burn هر توکن اکانتی رو پیدا میکنه، نه فقط ATA
+6. رتری و پیام خطای بهتر
+
+```html
 <!DOCTYPE html>
 <html lang="en" dir="ltr">
 <head>
@@ -157,8 +167,9 @@
     <label for="customRpc">Custom RPC URL (optional)</label>
     <input id="customRpc" type="url" placeholder="https://your-rpc-endpoint.com">
     <p class="small">
-      Leave empty to use the public Solana RPC (rate-limited).
+      Leave empty to use the public Solana RPC (rate-limited and often blocked in some regions).
       Must start with <code>https://</code>. Saved in your browser.
+      For reliable use, get a free endpoint from Helius, QuickNode, or Alchemy.
     </p>
     <button id="testRpc" class="secondary">Test RPC</button>
 
@@ -220,7 +231,7 @@
 
     <label class="check">
       <input type="checkbox" id="immutableMetadata">
-      <span>Make metadata immutable after creation (Update Authority = None on metadata).</span>
+      <span>Make metadata immutable after creation (is_mutable = false on metadata account).</span>
     </label>
 
     <button id="create">Create Token</button>
@@ -246,7 +257,7 @@
     <h2>Fees &amp; Security</h2>
     <p class="small">
       This site charges no extra fees. Transactions incur Solana network fees and rent for on-chain accounts.
-      Creating an SPL token with metadata typically costs around 0.03 SOL.
+      Creating an SPL token with metadata typically costs around 0.02–0.03 SOL.
       Please keep this browser tab open until the creation process completes.
     </p>
   </section>
@@ -265,10 +276,18 @@
 
 <script type="module">
   // ═══════════════════════════════════════════════════════════
-  // 1. Library loading
+  // 1. Library loading with multi-CDN fallback
   // ═══════════════════════════════════════════════════════════
-  const ESM_WEB3 = "https://esm.sh/@solana/web3.js@1.95.3";
-  const ESM_SPL  = "https://esm.sh/@solana/spl-token@0.4.9";
+  const WEB3_CDNS = [
+    "https://esm.sh/@solana/web3.js@1.95.3",
+    "https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.3/+esm",
+    "https://esm.run/@solana/web3.js@1.95.3",
+  ];
+  const SPL_CDNS = [
+    "https://esm.sh/@solana/spl-token@0.4.9",
+    "https://cdn.jsdelivr.net/npm/@solana/spl-token@0.4.9/+esm",
+    "https://esm.run/@solana/spl-token@0.4.9",
+  ];
 
   function escapeHtml(s) {
     return String(s)
@@ -279,15 +298,23 @@
       .replace(/'/g, "&#39;");
   }
 
-  function renderLoadError(which, e) {
-    const message = escapeHtml((e && e.message) ? e.message : String(e));
+  function renderLoadError(which, errors) {
+    const list = errors.map((e, i) =>
+      `<li style="margin:6px 0"><code>CDN ${i + 1}:</code> ${escapeHtml(e?.message || String(e))}</li>`
+    ).join("");
     document.body.innerHTML =
       `<div style="padding:24px;font-family:system-ui,sans-serif;color:#f5f3ff;background:#0b0914;min-height:100vh">
          <h2 style="color:#fb7185;margin:0 0 12px">Failed to load ${escapeHtml(which)}</h2>
-         <p style="color:#aaa3c2;line-height:1.8;margin:0 0 16px">
-           ${message}<br><br>
-           Check your internet connection and try again.
+         <p style="color:#aaa3c2;line-height:1.8;margin:0 0 12px">
+           All CDN fallbacks failed. Common causes:
          </p>
+         <ul style="color:#aaa3c2;line-height:1.7;margin:0 0 16px;padding-left:20px">
+           <li>Network blocked — the app needs access to esm.sh, jsdelivr, or esm.run</li>
+           <li>ISP / firewall filtering</li>
+           <li>Browser extension blocking remote modules</li>
+         </ul>
+         <p style="color:#aaa3c2;margin:0 0 8px">Errors:</p>
+         <ul style="color:#fb7185;padding-left:20px;margin:0 0 20px">${list}</ul>
          <button onclick="location.reload()" style="
            padding:12px 20px;border:0;border-radius:10px;cursor:pointer;
            font:inherit;font-weight:800;color:#100b1d;
@@ -296,37 +323,30 @@
        </div>`;
   }
 
-  let SolanaWeb3, SplToken;
-
-  try {
-    SolanaWeb3 = await import(ESM_WEB3);
-  } catch (e) {
-    renderLoadError("@solana/web3.js", e);
-    throw e;
+  async function loadModule(urls, label) {
+    const errors = [];
+    for (const url of urls) {
+      try {
+        return await import(url);
+      } catch (e) {
+        errors.push(e);
+        console.warn(`CDN failed: ${url}`, e);
+      }
+    }
+    renderLoadError(label, errors);
+    throw new Error(`All CDNs failed for ${label}`);
   }
 
-  try {
-    SplToken = await import(ESM_SPL);
-  } catch (e) {
-    renderLoadError("@solana/spl-token", e);
-    throw e;
-  }
+  const SolanaWeb3 = await loadModule(WEB3_CDNS, "@solana/web3.js");
+  const SplToken   = await loadModule(SPL_CDNS,  "@solana/spl-token");
 
   const {
-    Connection,
-    Keypair,
-    PublicKey,
-    SystemProgram,
-    Transaction,
-    TransactionInstruction,
-    SYSVAR_RENT_PUBKEY,
-    LAMPORTS_PER_SOL,
+    Connection, Keypair, PublicKey, SystemProgram, Transaction,
+    TransactionInstruction, SYSVAR_RENT_PUBKEY, LAMPORTS_PER_SOL,
   } = SolanaWeb3;
 
   const {
-    TOKEN_PROGRAM_ID,
-    MINT_SIZE,
-    ACCOUNT_SIZE,
+    TOKEN_PROGRAM_ID, MINT_SIZE, ACCOUNT_SIZE,
     createInitializeMintInstruction,
     getAssociatedTokenAddress,
     createAssociatedTokenAccountInstruction,
@@ -349,23 +369,11 @@
   const MIN_SOL_BUFFER = 0.05 * LAMPORTS_PER_SOL;
   const RPC_STORAGE_KEY = "spl_studio_custom_rpc";
 
-  // Metaplex Token Metadata structure:
-  //   key(1) + update_auth(32) + mint(32) + data + primary_sale(1)
-  //   + is_mutable(1) + edition_nonce(2) + token_standard(2)
-  //   + collection(1) + uses(1) + collection_details(1)
-  //   + programmable_config(1) = 679 bytes base
-  //
-  // data = name(4+len) + symbol(4+len) + uri(4+len)
-  //        + seller_fee(2) + creators(1 + 34*N)
-  //
-  // Space is reserved for maximum allowed lengths so the program
-  // never fails with "account data too small" during write.
-  const METADATA_BASE_SIZE = 679;
+  // Metaplex Token Metadata MAX_METADATA_LEN — official spec.
+  const METADATA_SIZE = 679;
   const MAX_NAME_BYTES = 32;
   const MAX_SYMBOL_BYTES = 10;
   const MAX_URI_BYTES = 200;
-  const METADATA_MAX_SIZE =
-    METADATA_BASE_SIZE + MAX_NAME_BYTES + MAX_SYMBOL_BYTES + MAX_URI_BYTES;
 
   const DEFAULT_FEE_SOL = 5000 / LAMPORTS_PER_SOL;
   const CONFIRM_TIMEOUT_MS = 90_000;
@@ -391,9 +399,7 @@
   // ═══════════════════════════════════════════════════════════
   // 4. Generic helpers
   // ═══════════════════════════════════════════════════════════
-  function networkName() {
-    return $("network").value;
-  }
+  function networkName() { return $("network").value; }
 
   function defaultEndpoint(net) {
     return net === "devnet"
@@ -401,9 +407,7 @@
       : "https://api.mainnet-beta.solana.com";
   }
 
-  function bytesLength(str) {
-    return new TextEncoder().encode(str).length;
-  }
+  function bytesLength(str) { return new TextEncoder().encode(str).length; }
 
   function errMsg(e) {
     if (!e) return "Unknown error";
@@ -413,18 +417,13 @@
     try { return JSON.stringify(e); } catch { return String(e); }
   }
 
-  function sleep(ms) {
-    return new Promise((r) => setTimeout(r, ms));
-  }
+  function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
   function concatUint8(chunks) {
     const total = chunks.reduce((s, c) => s + c.length, 0);
     const out = new Uint8Array(total);
     let offset = 0;
-    for (const c of chunks) {
-      out.set(c, offset);
-      offset += c.length;
-    }
+    for (const c of chunks) { out.set(c, offset); offset += c.length; }
     return out;
   }
 
@@ -442,7 +441,7 @@
         await navigator.clipboard.writeText(text);
         ok = true;
       }
-    } catch (_) { /* fall through to fallback */ }
+    } catch (_) { /* fall through */ }
 
     if (!ok) {
       const ta = document.createElement("textarea");
@@ -451,8 +450,7 @@
       ta.style.opacity = "0";
       ta.style.pointerEvents = "none";
       document.body.appendChild(ta);
-      ta.focus();
-      ta.select();
+      ta.focus(); ta.select();
       try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
       document.body.removeChild(ta);
     }
@@ -461,29 +459,22 @@
       const original = buttonEl.textContent;
       buttonEl.textContent = "Copied!";
       buttonEl.disabled = true;
-      setTimeout(() => {
-        buttonEl.textContent = original;
-        buttonEl.disabled = false;
-      }, 1200);
+      setTimeout(() => { buttonEl.textContent = original; buttonEl.disabled = false; }, 1200);
     }
     return ok;
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 5. Custom RPC handling
+  // 5. Custom RPC
   // ═══════════════════════════════════════════════════════════
   function getCustomRpc() {
     const raw = $("customRpc").value.trim();
     if (!raw) return { endpoint: null, invalid: false, raw: "" };
     try {
       const u = new URL(raw);
-      if (u.protocol !== "https:") {
-        return { endpoint: null, invalid: true, raw };
-      }
-      // Remove trailing slashes from pathname only
+      if (u.protocol !== "https:") return { endpoint: null, invalid: true, raw };
       const cleanPath = u.pathname.replace(/\/+$/, "");
-      const endpoint = u.origin + cleanPath + u.search;
-      return { endpoint, invalid: false, raw };
+      return { endpoint: u.origin + cleanPath + u.search, invalid: false, raw };
     } catch {
       return { endpoint: null, invalid: true, raw };
     }
@@ -515,18 +506,12 @@
     const rpcInfo = getCustomRpc();
 
     if (rpcInfo.invalid) {
-      throw new Error(
-        "Custom RPC URL is invalid or not HTTPS. Please fix it or clear the field."
-      );
+      throw new Error("Custom RPC URL is invalid or not HTTPS. Fix it or clear the field.");
     }
 
     const endpoint = rpcInfo.endpoint || defaultEndpoint(net);
 
-    if (
-      state.conn &&
-      state.connNetwork === net &&
-      state.connEndpoint === endpoint
-    ) {
+    if (state.conn && state.connNetwork === net && state.connEndpoint === endpoint) {
       return state.conn;
     }
 
@@ -537,7 +522,7 @@
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 6. Modal dialog
+  // 6. Modal
   // ═══════════════════════════════════════════════════════════
   function showModal(title, bodyText, isConfirm = true) {
     if (state.isModalOpen) {
@@ -595,30 +580,22 @@
     if (!/^(?:\d+)(?:\.\d+)?$/.test(text)) {
       throw new Error(`${label} must be a valid positive decimal number.`);
     }
-
     const [whole, fraction = ""] = text.split(".");
     if (fraction.length > decimals) {
       throw new Error(`${label} has more than ${decimals} decimal places.`);
     }
-
     const raw =
       BigInt(whole) * 10n ** BigInt(decimals) +
       BigInt(fraction.padEnd(decimals, "0") || "0");
-
     if (raw <= 0n) {
-      throw new Error(
-        `${label} must be greater than zero. ` +
-          `(This app does not support creating tokens with zero initial supply.)`
-      );
+      throw new Error(`${label} must be > 0. (Zero-supply tokens are not supported here.)`);
     }
-    if (raw > U64_MAX) {
-      throw new Error(`${label} exceeds the maximum allowed value.`);
-    }
+    if (raw > U64_MAX) throw new Error(`${label} exceeds the maximum allowed value.`);
     return raw;
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 8. Form validation
+  // 8. Validation
   // ═══════════════════════════════════════════════════════════
   function validateMetadata() {
     if (!state.wallet) throw new Error("Please connect Phantom first.");
@@ -671,9 +648,8 @@
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 9. Transaction signing pipeline
+  // 9. Signing pipeline
   // ═══════════════════════════════════════════════════════════
-
   async function estimateFee(conn, tx, signers) {
     try {
       const temp = new Transaction();
@@ -682,11 +658,7 @@
       temp.recentBlockhash = latest.blockhash;
       temp.instructions = [...tx.instructions];
       if (signers.length) temp.partialSign(...signers);
-
-      const info = await conn.getFeeForMessage(
-        temp.compileMessage(),
-        { commitment: "confirmed" }
-      );
+      const info = await conn.getFeeForMessage(temp.compileMessage(), { commitment: "confirmed" });
       return info?.value != null ? info.value / LAMPORTS_PER_SOL : DEFAULT_FEE_SOL;
     } catch {
       return DEFAULT_FEE_SOL;
@@ -697,58 +669,34 @@
     let timeoutId;
     try {
       return await Promise.race([
-        conn.confirmTransaction(
-          { signature, blockhash, lastValidBlockHeight },
-          "confirmed"
-        ),
-        new Promise((_, rej) => {
-          timeoutId = setTimeout(() => rej(new Error("TIMEOUT")), ms);
-        }),
+        conn.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed"),
+        new Promise((_, rej) => { timeoutId = setTimeout(() => rej(new Error("TIMEOUT")), ms); }),
       ]);
-    } finally {
-      if (timeoutId) clearTimeout(timeoutId);
-    }
+    } finally { if (timeoutId) clearTimeout(timeoutId); }
   }
 
   async function confirmOrThrow(conn, signature, latest) {
     try {
       const confirmation = await confirmWithTimeout(
-        conn, signature, latest.blockhash, latest.lastValidBlockHeight,
-        CONFIRM_TIMEOUT_MS
+        conn, signature, latest.blockhash, latest.lastValidBlockHeight, CONFIRM_TIMEOUT_MS
       );
       if (confirmation.value.err) {
-        throw new Error(
-          `Transaction failed: ${JSON.stringify(confirmation.value.err)}\n` +
-            `Signature: ${signature}`
-        );
+        throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}\nSignature: ${signature}`);
       }
       return signature;
     } catch (e) {
       if (e.message !== "TIMEOUT") throw e;
-
-      // On timeout, query on-chain status before assuming success.
       try {
-        const status = await conn.getSignatureStatus(signature, {
-          searchTransactionHistory: true,
-        });
+        const status = await conn.getSignatureStatus(signature, { searchTransactionHistory: true });
         const s = status?.value;
-        if (s?.err) {
-          throw new Error(`Transaction failed: ${JSON.stringify(s.err)}`);
-        }
-        if (
-          s?.confirmationStatus === "confirmed" ||
-          s?.confirmationStatus === "finalized"
-        ) {
+        if (s?.err) throw new Error(`Transaction failed: ${JSON.stringify(s.err)}`);
+        if (s?.confirmationStatus === "confirmed" || s?.confirmationStatus === "finalized") {
           return signature;
         }
-      } catch (statusErr) {
-        console.warn("Status check failed:", statusErr);
-      }
-
+      } catch (statusErr) { console.warn("Status check failed:", statusErr); }
       await showModal(
         "Confirmation took too long",
-        `The transaction was sent but confirmation is slow:\n\n${signature}\n\n` +
-          `Check Solscan. If confirmed, you may proceed.`,
+        `The transaction was sent but confirmation is slow:\n\n${signature}\n\nCheck Solscan. If confirmed, you may proceed.`,
         false
       );
       return signature;
@@ -758,21 +706,16 @@
   async function signAndSend(conn, tx, signers = [], actionLabel = "transaction") {
     if (!state.wallet || !state.provider) throw new Error("Wallet not connected.");
 
-    const estimatedFeeSol = await estimateFee(conn, tx, signers);
-
+    const feeSol = await estimateFee(conn, tx, signers);
     const approved = await showModal(
       `Confirm ${actionLabel}`,
-      `Estimated network fee: ~${estimatedFeeSol.toFixed(6)} SOL.\n\n` +
-        `Do you want to continue?`
+      `Estimated network fee: ~${feeSol.toFixed(6)} SOL.\n\nDo you want to continue?`
     );
     if (!approved) throw new Error("Transaction cancelled by user.");
 
-    // Fetch a fresh blockhash immediately before signing to avoid expiry
-    // during the time the user spent reviewing the modal.
     const latest = await conn.getLatestBlockhash({ commitment: "confirmed" });
     tx.feePayer = state.wallet;
     tx.recentBlockhash = latest.blockhash;
-
     if (signers.length) tx.partialSign(...signers);
 
     const signed = await state.provider.signTransaction(tx);
@@ -780,94 +723,80 @@
       preflightCommitment: "confirmed",
       maxRetries: 3,
     });
-
     return await confirmOrThrow(conn, signature, latest);
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 10. Metaplex metadata construction
+  // 10. Metaplex metadata
   // ═══════════════════════════════════════════════════════════
   function metadataPda(mint) {
     return PublicKey.findProgramAddressSync(
-      [
-        new TextEncoder().encode("metadata"),
-        METADATA_PROGRAM_ID.toBytes(),
-        mint.toBytes(),
-      ],
+      [new TextEncoder().encode("metadata"), METADATA_PROGRAM_ID.toBytes(), mint.toBytes()],
       METADATA_PROGRAM_ID
     )[0];
   }
 
-  function u32(value) {
+  function u32(v) {
     const b = new Uint8Array(4);
-    new DataView(b.buffer).setUint32(0, value, true);
+    new DataView(b.buffer).setUint32(0, v, true);
     return b;
   }
-
-  function u16(value) {
-    if (value < 0 || value > 0xffff) {
-      throw new Error(`u16 out of range: ${value}`);
-    }
+  function u16(v) {
+    if (v < 0 || v > 0xffff) throw new Error(`u16 out of range: ${v}`);
     const b = new Uint8Array(2);
-    new DataView(b.buffer).setUint16(0, value, true);
+    new DataView(b.buffer).setUint16(0, v, true);
     return b;
   }
-
   function borshString(value) {
     const data = new TextEncoder().encode(value);
     return concatUint8([u32(data.length), data]);
   }
 
-  function metadataSpace() {
-    // Reserved space for maximum allowed lengths. This guarantees the
-    // Metaplex program never runs out of account space while writing.
-    return METADATA_MAX_SIZE;
-  }
-
   function createMetadataInstruction(mint, authority, uri, name, symbol, isMutable) {
     const metadata = metadataPda(mint);
-
-    // CreateMetadataAccountArgs (Borsh):
-    //   name: String
-    //   symbol: String
-    //   uri: String
-    //   seller_fee_basis_points: u16
-    //   creators: Option<Vec<Creator>>   -> 1 byte (0 = None)
-    //   is_mutable: bool                 -> 1 byte
+    // CreateMetadataAccountV3 payload
     const data = concatUint8([
-      new Uint8Array([33]),                    // discriminator
+      new Uint8Array([33]),                 // instruction discriminator
       borshString(name),
       borshString(symbol),
       borshString(uri),
-      u16(0),                                  // seller_fee_basis_points
-      new Uint8Array([0]),                     // creators: None
-      new Uint8Array([isMutable ? 1 : 0]),     // is_mutable
+      u16(0),                               // seller_fee_basis_points
+      new Uint8Array([0]),                  // creators: None
+      new Uint8Array([0]),                  // collection: None
+      new Uint8Array([0]),                  // uses: None
+      new Uint8Array([isMutable ? 1 : 0]),  // is_mutable
+      new Uint8Array([0]),                  // collection_details: None
     ]);
 
-    // Metaplex CreateMetadataAccount expects exactly 7 accounts.
     return new TransactionInstruction({
       programId: METADATA_PROGRAM_ID,
       keys: [
-        { pubkey: metadata,                 isSigner: false, isWritable: true  },
-        { pubkey: mint,                     isSigner: false, isWritable: false },
-        { pubkey: authority,                isSigner: true,  isWritable: false },
-        { pubkey: authority,                isSigner: true,  isWritable: true  },
-        { pubkey: authority,                isSigner: false, isWritable: false },
-        { pubkey: SystemProgram.programId,  isSigner: false, isWritable: false },
-        { pubkey: SYSVAR_RENT_PUBKEY,       isSigner: false, isWritable: false },
+        { pubkey: metadata,                isSigner: false, isWritable: true  },
+        { pubkey: mint,                    isSigner: false, isWritable: false },
+        { pubkey: authority,               isSigner: true,  isWritable: false },
+        { pubkey: authority,               isSigner: true,  isWritable: true  },
+        { pubkey: authority,               isSigner: true,  isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: SYSVAR_RENT_PUBKEY,      isSigner: false, isWritable: false },
       ],
       data,
     });
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 11. Phantom wallet management
+  // 11. Phantom management
   // ═══════════════════════════════════════════════════════════
+  function getPhantomProvider() {
+    if (window.phantom?.solana?.isPhantom) return window.phantom.solana;
+    if (window.solana?.isPhantom) return window.solana;
+    return null;
+  }
+
   async function waitForPhantom(timeoutMs = 5000) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-      const p = window.phantom?.solana;
-      if (p?.isPhantom) return p;
+      const p = getPhantomProvider();
+      if (p) return p;
       await sleep(100);
     }
     return null;
@@ -876,26 +805,17 @@
   function detachProviderEvents() {
     const p = state.currentProvider;
     const h = state.providerHandlers;
-
     if (p && h) {
-      const off =
-        typeof p.off === "function"
-          ? p.off.bind(p)
-          : typeof p.removeListener === "function"
-            ? p.removeListener.bind(p)
-            : null;
-
+      const off = typeof p.off === "function" ? p.off.bind(p)
+                : typeof p.removeListener === "function" ? p.removeListener.bind(p) : null;
       if (off) {
         for (const [event, handler] of [
           ["disconnect", h.onDisconnect],
           ["accountChanged", h.onAccount],
           ["connect", h.onConnect],
-        ]) {
-          try { off(event, handler); } catch (_) { /* ignore */ }
-        }
+        ]) { try { off(event, handler); } catch (_) {} }
       }
     }
-
     state.currentProvider = null;
     state.providerHandlers = null;
   }
@@ -909,7 +829,6 @@
       state.wallet = null;
       setStatus("walletStatus", "Phantom wallet disconnected.", "error");
     };
-
     const onAccount = async (publicKey) => {
       if (publicKey) {
         state.wallet = new PublicKey(publicKey.toString());
@@ -919,7 +838,6 @@
         setStatus("walletStatus", "Wallet disconnected.", "error");
       }
     };
-
     const onConnect = async () => {
       if (!state.provider.publicKey) return;
       state.wallet = new PublicKey(state.provider.publicKey.toString());
@@ -932,22 +850,15 @@
     };
 
     state.providerHandlers = { onDisconnect, onAccount, onConnect };
-
     try {
       state.provider.on?.("disconnect", onDisconnect);
       state.provider.on?.("accountChanged", onAccount);
       state.provider.on?.("connect", onConnect);
-    } catch (e) {
-      console.warn("Phantom event binding failed:", e);
-    }
+    } catch (e) { console.warn("Phantom event binding failed:", e); }
   }
 
   async function updateWalletBalanceAndStatus() {
-    if (!state.wallet) {
-      setStatus("walletStatus", "Wallet not connected.");
-      return;
-    }
-
+    if (!state.wallet) { setStatus("walletStatus", "Wallet not connected."); return; }
     try {
       const conn = connection();
       const lamports = await conn.getBalance(state.wallet);
@@ -955,59 +866,51 @@
       const usingCustom = getCustomRpc().endpoint ? " (custom RPC)" : "";
       setStatus(
         "walletStatus",
-        `Connected:\nAddress: ${state.wallet.toBase58()}\nBalance: ${solBalance} SOL\n` +
-          `Network: ${networkName()}${usingCustom}`,
+        `Connected:\nAddress: ${state.wallet.toBase58()}\nBalance: ${solBalance} SOL\nNetwork: ${networkName()}${usingCustom}`,
         "success"
       );
     } catch (e) {
       console.warn("getBalance failed:", e);
       setStatus(
         "walletStatus",
-        `Connected:\n${state.wallet.toBase58()}\nNetwork: ${networkName()}\n` +
-          `(Balance fetch failed)`,
+        `Connected:\n${state.wallet.toBase58()}\nNetwork: ${networkName()}\n(Balance fetch failed)`,
         "warning"
       );
     }
   }
 
-  function assertNetworkMatch() {
+  function checkNetworkMatch() {
     const phantomNet = state.provider?.cluster;
     if (!phantomNet) {
-      throw new Error(
-        "Phantom network is unknown. Make sure Phantom is set to " +
-          networkName() +
-          " and reconnect."
-      );
+      return { ok: true, warning: "Phantom network unknown. Continuing — make sure it matches the UI." };
     }
     const uiIsMain = networkName() === "mainnet-beta";
     const phantomIsMain = phantomNet === "mainnet-beta";
-    if (uiIsMain !== phantomIsMain) {
-      throw new Error(
-        `Network mismatch!\nUI: ${networkName()}\nPhantom: ${phantomNet}\n` +
-          `Please align Phantom's network with the UI.`
-      );
-    }
+    if (uiIsMain === phantomIsMain) return { ok: true };
+    return {
+      ok: false,
+      warning:
+        `Network mismatch!\nUI: ${networkName()}\nPhantom: ${phantomNet}\n\n` +
+        `If you continue, transactions will likely fail. Switch Phantom's network or change the UI selector.`,
+    };
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 12. Create-token flow
+  // 12. Create-token flow (2 transactions)
   // ═══════════════════════════════════════════════════════════
 
   async function checkSolBalance(conn, wallet) {
     const [mintRent, ataRent, metaRent] = await Promise.all([
       conn.getMinimumBalanceForRentExemption(MINT_SIZE),
       conn.getMinimumBalanceForRentExemption(ACCOUNT_SIZE),
-      conn.getMinimumBalanceForRentExemption(metadataSpace()),
+      conn.getMinimumBalanceForRentExemption(METADATA_SIZE),
     ]);
-
     const required = mintRent + ataRent + metaRent + MIN_SOL_BUFFER;
     const balance = await conn.getBalance(wallet);
-
     if (balance < required) {
       throw new Error(
-        `Insufficient SOL balance.\n` +
-          `Required: ${(required / LAMPORTS_PER_SOL).toFixed(4)} SOL\n` +
-          `Current:  ${(balance / LAMPORTS_PER_SOL).toFixed(4)} SOL`
+        `Insufficient SOL balance.\nRequired: ${(required / LAMPORTS_PER_SOL).toFixed(4)} SOL\n` +
+        `Current:  ${(balance / LAMPORTS_PER_SOL).toFixed(4)} SOL`
       );
     }
   }
@@ -1017,143 +920,74 @@
     const mintRent = await conn.getMinimumBalanceForRentExemption(MINT_SIZE);
 
     const tx = new Transaction();
-    tx.add(
-      SystemProgram.createAccount({
-        fromPubkey: state.wallet,
-        newAccountPubkey: mint.publicKey,
-        lamports: mintRent,
-        space: MINT_SIZE,
-        programId: TOKEN_PROGRAM_ID,
-      })
-    );
-    tx.add(
-      createInitializeMintInstruction(
-        mint.publicKey,
-        decimals,
-        state.wallet,
-        state.wallet,
-        TOKEN_PROGRAM_ID
-      )
-    );
-    tx.add(
-      createMetadataInstruction(
-        mint.publicKey,
-        state.wallet,
-        uri,
-        name,
-        symbol,
-        !$("immutableMetadata").checked
-      )
-    );
+    tx.add(SystemProgram.createAccount({
+      fromPubkey: state.wallet,
+      newAccountPubkey: mint.publicKey,
+      lamports: mintRent,
+      space: MINT_SIZE,
+      programId: TOKEN_PROGRAM_ID,
+    }));
+    tx.add(createInitializeMintInstruction(
+      mint.publicKey, decimals, state.wallet, state.wallet, TOKEN_PROGRAM_ID
+    ));
+    tx.add(createMetadataInstruction(
+      mint.publicKey, state.wallet, uri, name, symbol, !$("immutableMetadata").checked
+    ));
 
-    return await signAndSend(conn, tx, [mint], "Mint + Metadata");
+    return await signAndSend(conn, tx, [mint], "Mint + Metadata (1/2)");
   }
 
-  async function sendAtaAndMintTo(conn, mint, rawAmount) {
+  async function sendFinalizeTransaction(conn, mint, rawAmount) {
     const ata = await getAssociatedTokenAddress(
-      mint.publicKey,
-      state.wallet,
-      false,
-      TOKEN_PROGRAM_ID
+      mint.publicKey, state.wallet, false, TOKEN_PROGRAM_ID
     );
 
     const tx = new Transaction();
     const ataInfo = await conn.getAccountInfo(ata);
     if (!ataInfo) {
-      tx.add(
-        createAssociatedTokenAccountInstruction(
-          state.wallet,
-          ata,
-          state.wallet,
-          mint.publicKey,
-          TOKEN_PROGRAM_ID
-        )
-      );
+      tx.add(createAssociatedTokenAccountInstruction(
+        state.wallet, ata, state.wallet, mint.publicKey, TOKEN_PROGRAM_ID
+      ));
     }
-    tx.add(
-      createMintToInstruction(
-        mint.publicKey,
-        ata,
-        state.wallet,
-        rawAmount,
-        [],
-        TOKEN_PROGRAM_ID
-      )
-    );
+    // MintTo MUST come before revoke of mint authority.
+    tx.add(createMintToInstruction(
+      mint.publicKey, ata, state.wallet, rawAmount, [], TOKEN_PROGRAM_ID
+    ));
 
-    const sig = await signAndSend(conn, tx, [], "Initial MintTo");
+    if ($("revokeMint").checked) {
+      tx.add(createSetAuthorityInstruction(
+        mint.publicKey, state.wallet, AuthorityType.MintTokens, null, [], TOKEN_PROGRAM_ID
+      ));
+    }
+    if ($("revokeFreeze").checked) {
+      tx.add(createSetAuthorityInstruction(
+        mint.publicKey, state.wallet, AuthorityType.FreezeAccount, null, [], TOKEN_PROGRAM_ID
+      ));
+    }
+
+    const sig = await signAndSend(conn, tx, [], "ATA + MintTo + Revoke (2/2)");
     return { ata, sig };
-  }
-
-  async function sendRevokeAuthorities(conn, mint) {
-    const revokeMint = $("revokeMint").checked;
-    const revokeFreeze = $("revokeFreeze").checked;
-    if (!revokeMint && !revokeFreeze) return null;
-
-    const tx = new Transaction();
-    if (revokeMint) {
-      tx.add(
-        createSetAuthorityInstruction(
-          mint.publicKey,
-          state.wallet,
-          AuthorityType.MintTokens,
-          null,
-          [],
-          TOKEN_PROGRAM_ID
-        )
-      );
-    }
-    if (revokeFreeze) {
-      tx.add(
-        createSetAuthorityInstruction(
-          mint.publicKey,
-          state.wallet,
-          AuthorityType.FreezeAccount,
-          null,
-          [],
-          TOKEN_PROGRAM_ID
-        )
-      );
-    }
-    return await signAndSend(conn, tx, [], "Revoke Authorities");
   }
 
   async function createTokenFlow(conn) {
     const { name, symbol, uri, decimals, raw } = validateMetadata();
-
     const mint = Keypair.generate();
     const mintAddress = mint.publicKey.toBase58();
 
-    let sig1 = null;
-    let sig2 = null;
-
+    let sig1 = null, sig2 = null;
     try {
-      // Step 1 — Mint account + Metaplex metadata
       setStatus(
         "createStatus",
-        `Mint address generated:\n${mintAddress}\n` +
-          `Sending transaction 1 of 3 (Mint + Metadata)...`
+        `Mint address generated:\n${mintAddress}\n\n[1/2] Sending Mint + Metadata transaction...`
       );
       sig1 = await sendMintAndMetadata(conn, mint, { name, symbol, uri, decimals });
 
-      // Step 2 — ATA + initial mint
       setStatus(
         "createStatus",
-        `Step 1 OK.\nMint: ${mintAddress}\n` +
-          `Signature: ${sig1}\n` +
-          `Sending transaction 2 of 3 (ATA + MintTo)...`
+        `[1/2] OK\nMint: ${mintAddress}\nSignature: ${sig1}\n\n[2/2] Sending ATA + MintTo + Revoke...`
       );
-      const { ata, sig: s2 } = await sendAtaAndMintTo(conn, mint, raw);
-      sig2 = s2;
-
-      // Step 3 — Optional revoke
-      setStatus(
-        "createStatus",
-        `Step 2 OK.\nATA: ${ata.toBase58()}\n` +
-          `Signature: ${sig2}\n` +
-          `Sending transaction 3 of 3 (Revoke authorities)...`
-      );
-      const sig3 = await sendRevokeAuthorities(conn, mint);
+      const { ata, sig } = await sendFinalizeTransaction(conn, mint, raw);
+      sig2 = sig;
 
       return {
         mint: mintAddress,
@@ -1162,58 +996,51 @@
         supply: $("supply").value,
         revokeMint: $("revokeMint").checked,
         revokeFreeze: $("revokeFreeze").checked,
-        sig1,
-        sig2,
-        sig3,
+        sig1, sig2,
       };
     } catch (e) {
-      // Structural warning: mint account exists on-chain but flow failed.
-      if (sig1 && !sig2) {
-        e.orphanMint = mintAddress;
-        e.step1Sig = sig1;
-      }
+      if (sig1 && !sig2) { e.orphanMint = mintAddress; e.step1Sig = sig1; }
       throw e;
     }
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 13. Burn flow
+  // 13. Burn flow (any token account, not just ATA)
   // ═══════════════════════════════════════════════════════════
-
-  async function fetchTokenAccount(conn, mint, wallet) {
-    const ata = await getAssociatedTokenAddress(
-      mint, wallet, false, TOKEN_PROGRAM_ID
-    );
-
-    const info = await conn.getAccountInfo(ata);
-    if (!info) {
-      throw new Error("No token account for this mint exists in your wallet.");
-    }
-    if (!info.owner.equals(TOKEN_PROGRAM_ID)) {
-      throw new Error("Token account belongs to a different SPL program.");
-    }
-
-    // Retry: account may be fresh and not yet fully propagated.
-    let lastErr = null;
-    for (let i = 0; i < 3; i++) {
+  async function findBurnableTokenAccount(conn, mint, wallet) {
+    // Prefer the ATA if it has balance.
+    const ata = await getAssociatedTokenAddress(mint, wallet, false, TOKEN_PROGRAM_ID);
+    const ataInfo = await conn.getAccountInfo(ata);
+    if (ataInfo && ataInfo.owner.equals(TOKEN_PROGRAM_ID)) {
       try {
         const acc = await getAccount(conn, ata, "confirmed", TOKEN_PROGRAM_ID);
-        if (!acc.owner.equals(wallet)) {
-          throw new Error("This token account is not owned by the connected wallet.");
-        }
-        return { ata, account: acc };
-      } catch (e) {
-        lastErr = e;
-        if (i < 2) await sleep(1500);
-      }
+        if (acc.owner.equals(wallet) && acc.amount > 0n) return { ata, account: acc };
+      } catch (_) { /* fall through to full scan */ }
     }
-    throw lastErr || new Error("Failed to fetch token account.");
+
+    // Full scan of token accounts owned by this wallet for this mint.
+    const accounts = await conn.getTokenAccountsByOwner(wallet, { mint }, "confirmed");
+    if (!accounts.value.length) {
+      throw new Error("No token account with this mint found in your wallet.");
+    }
+
+    let best = null;
+    for (const info of accounts.value) {
+      try {
+        const acc = await getAccount(conn, info.pubkey, "confirmed", TOKEN_PROGRAM_ID);
+        if (!acc.owner.equals(wallet)) continue;
+        if (!best || acc.amount > best.account.amount) best = { ata: info.pubkey, account: acc };
+      } catch (_) { /* ignore unreadable */ }
+    }
+    if (!best || best.account.amount === 0n) {
+      throw new Error("No token account with a positive balance for this mint.");
+    }
+    return best;
   }
 
   async function burnFlow(conn) {
     const mintStr = $("burnMint").value.trim();
     const amountStr = $("burnAmount").value;
-
     if (!mintStr) throw new Error("Mint address is required.");
 
     let mintPk;
@@ -1223,55 +1050,42 @@
     const mintAccountInfo = await conn.getAccountInfo(mintPk);
     if (!mintAccountInfo) throw new Error("Mint account not found.");
     if (!mintAccountInfo.owner.equals(TOKEN_PROGRAM_ID)) {
-      throw new Error(
-        "This address is not a standard SPL (classic) mint.\n" +
-          "(This app only supports classic SPL tokens.)"
-      );
+      throw new Error("This address is not a standard SPL (classic) mint.");
     }
 
     const mintInfo = await getMint(conn, mintPk, "confirmed", TOKEN_PROGRAM_ID);
     const rawAmount = decimalToRaw(amountStr, mintInfo.decimals, "Burn amount");
 
-    setStatus("burnStatus", "Verifying token account...");
-    const { ata } = await fetchTokenAccount(conn, mintPk, state.wallet);
+    setStatus("burnStatus", "Locating token account with balance...");
+    const { ata, account } = await findBurnableTokenAccount(conn, mintPk, state.wallet);
+
+    if (rawAmount > account.amount) {
+      throw new Error(
+        `Burn amount exceeds balance.\nBalance: ${account.amount}\nRequested: ${rawAmount} (raw units)`
+      );
+    }
 
     const tx = new Transaction();
-    tx.add(
-      createBurnInstruction(
-        ata,
-        mintPk,
-        state.wallet,
-        rawAmount,
-        [],
-        TOKEN_PROGRAM_ID
-      )
-    );
+    tx.add(createBurnInstruction(ata, mintPk, state.wallet, rawAmount, [], TOKEN_PROGRAM_ID));
 
-    setStatus("burnStatus", "Sending burn transaction...");
+    setStatus("burnStatus", `Burning ${amountStr} tokens from ${ata.toBase58()}...`);
     const sig = await signAndSend(conn, tx, [], "Burn Tokens");
-    return { amount: amountStr, sig };
+    return { amount: amountStr, sig, ata: ata.toBase58() };
   }
 
   // ═══════════════════════════════════════════════════════════
   // 14. Success renderers
   // ═══════════════════════════════════════════════════════════
-
   function buildKv(rows) {
     const kv = document.createElement("div");
     kv.className = "kv";
     for (const [k, v] of rows) {
-      const kEl = document.createElement("div");
-      kEl.className = "k";
-      kEl.textContent = k + ":";
-      const vEl = document.createElement("div");
-      vEl.className = "v";
-      vEl.textContent = v;
-      kv.appendChild(kEl);
-      kv.appendChild(vEl);
+      const kEl = document.createElement("div"); kEl.className = "k"; kEl.textContent = k + ":";
+      const vEl = document.createElement("div"); vEl.className = "v"; vEl.textContent = v;
+      kv.appendChild(kEl); kv.appendChild(vEl);
     }
     return kv;
   }
-
   function buildCopyButton(label, value) {
     const btn = document.createElement("button");
     btn.className = "copy-btn";
@@ -1279,14 +1093,11 @@
     btn.addEventListener("click", () => copyToClipboard(value, btn));
     return btn;
   }
-
   function buildSolscanLink(href, label) {
     const wrap = document.createElement("div");
     wrap.style.marginTop = "14px";
     const a = document.createElement("a");
-    a.href = href;
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
+    a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer";
     a.textContent = label || href;
     wrap.appendChild(a);
     return wrap;
@@ -1316,6 +1127,7 @@
     row.className = "copy-row";
     row.appendChild(buildCopyButton("Copy Mint", data.mint));
     row.appendChild(buildCopyButton("Copy ATA", data.ata));
+    row.appendChild(buildCopyButton("Copy All", JSON.stringify(data, null, 2)));
     el.appendChild(row);
 
     const sigTitle = document.createElement("div");
@@ -1324,8 +1136,7 @@
     sigTitle.style.fontWeight = "700";
     el.appendChild(sigTitle);
 
-    const sigs = [data.sig1, data.sig2, data.sig3].filter(Boolean);
-    sigs.forEach((sig, idx) => {
+    [data.sig1, data.sig2].filter(Boolean).forEach((sig, idx) => {
       const line = document.createElement("div");
       line.style.marginTop = "8px";
       line.style.fontFamily = "ui-monospace, monospace";
@@ -1337,9 +1148,7 @@
     });
 
     const cluster = networkName() === "devnet" ? "?cluster=devnet" : "";
-    el.appendChild(
-      buildSolscanLink(`https://solscan.io/token/${data.mint}${cluster}`)
-    );
+    el.appendChild(buildSolscanLink(`https://solscan.io/token/${data.mint}${cluster}`));
   }
 
   function renderBurnSuccess(data) {
@@ -1355,6 +1164,7 @@
 
     el.appendChild(buildKv([
       ["Amount", data.amount + " tokens"],
+      ["From", data.ata],
       ["Signature", data.sig],
     ]));
 
@@ -1364,9 +1174,7 @@
     el.appendChild(row);
 
     const cluster = networkName() === "devnet" ? "?cluster=devnet" : "";
-    el.appendChild(
-      buildSolscanLink(`https://solscan.io/tx/${data.sig}${cluster}`)
-    );
+    el.appendChild(buildSolscanLink(`https://solscan.io/tx/${data.sig}${cluster}`));
   }
 
   function renderOrphanMintWarning(mintAddress, step1Sig) {
@@ -1382,9 +1190,8 @@
 
     const body = document.createElement("div");
     body.textContent =
-      "The mint account was created and metadata was written, but a later " +
-      "step failed. This mint is now unused on-chain. You can inspect it " +
-      "or leave it as-is (it costs only the rent already paid).";
+      "The mint account was created and metadata written, but a later step failed. " +
+      "This mint is unused. You can inspect it or leave it (rent already paid).";
     body.style.lineHeight = "1.7";
     el.appendChild(body);
 
@@ -1392,25 +1199,20 @@
       ["Orphan Mint", mintAddress],
       ["Step 1 Signature", step1Sig],
     ]));
-
     const row = document.createElement("div");
     row.className = "copy-row";
     row.appendChild(buildCopyButton("Copy Mint", mintAddress));
     el.appendChild(row);
 
     const cluster = networkName() === "devnet" ? "?cluster=devnet" : "";
-    el.appendChild(
-      buildSolscanLink(`https://solscan.io/token/${mintAddress}${cluster}`)
-    );
+    el.appendChild(buildSolscanLink(`https://solscan.io/token/${mintAddress}${cluster}`));
   }
 
   // ═══════════════════════════════════════════════════════════
   // 15. Event handlers — wallet & RPC
   // ═══════════════════════════════════════════════════════════
-
   $("customRpc").addEventListener("change", () => {
     invalidateConnection();
-
     const info = getCustomRpc();
     if (info.invalid) {
       setStatus("walletStatus", "Custom RPC must be a valid https:// URL.", "error");
@@ -1425,13 +1227,10 @@
     btn.disabled = true;
     const original = btn.textContent;
     btn.textContent = "Testing...";
-
     try {
       const net = networkName();
       const rpcInfo = getCustomRpc();
-      if (rpcInfo.invalid) {
-        throw new Error("Custom RPC URL is invalid. It must start with https://");
-      }
+      if (rpcInfo.invalid) throw new Error("Custom RPC URL is invalid. It must start with https://");
 
       const endpoint = rpcInfo.endpoint || defaultEndpoint(net);
       const testConn = new Connection(endpoint, "confirmed");
@@ -1441,19 +1240,13 @@
 
       setStatus(
         "walletStatus",
-        `RPC OK\nEndpoint: ${endpoint}\n` +
-          `Version: ${version["solana-core"] || JSON.stringify(version)}\n` +
-          `Latency: ${ms} ms`,
+        `RPC OK\nEndpoint: ${endpoint}\nVersion: ${version["solana-core"] || JSON.stringify(version)}\nLatency: ${ms} ms`,
         "success"
       );
     } catch (e) {
       setStatus(
         "walletStatus",
-        `RPC test failed:\n${errMsg(e)}\n\n` +
-          `Possible causes:\n` +
-          `- The RPC URL is invalid or unreachable\n` +
-          `- Your internet connection is down\n` +
-          `- The endpoint does not speak JSON-RPC`,
+        `RPC test failed:\n${errMsg(e)}\n\nPossible causes:\n- Invalid or unreachable URL\n- Internet/ISP issue\n- Endpoint does not speak JSON-RPC`,
         "error"
       );
     } finally {
@@ -1466,9 +1259,7 @@
     try {
       const provider = await waitForPhantom();
       if (!provider) {
-        throw new Error(
-          "Phantom extension not found. Please install it and refresh the page."
-        );
+        throw new Error("Phantom extension not found. Install it and refresh the page.");
       }
       state.provider = provider;
       const response = await provider.connect();
@@ -1489,27 +1280,17 @@
 
   $("network").addEventListener("change", async () => {
     invalidateConnection();
-
-    if (!state.wallet) {
-      setStatus("walletStatus", "Wallet not connected.");
-      return;
+    if (!state.wallet) { setStatus("walletStatus", "Wallet not connected."); return; }
+    const check = checkNetworkMatch();
+    if (!check.ok) {
+      setStatus("walletStatus", check.warning, "warning");
+    } else {
+      await updateWalletBalanceAndStatus();
     }
-
-    try {
-      assertNetworkMatch();
-    } catch (e) {
-      setStatus(
-        "walletStatus",
-        errMsg(e) + "\n\n(Reconnect Phantom to sync networks.)",
-        "warning"
-      );
-    }
-    await updateWalletBalanceAndStatus();
   });
 
   $("resetState").addEventListener("click", () => {
     invalidateConnection();
-
     $("tokenName").value = "";
     $("tokenSymbol").value = "";
     $("supply").value = "1000000";
@@ -1534,7 +1315,6 @@
   // ═══════════════════════════════════════════════════════════
   // 16. Event handlers — create & burn
   // ═══════════════════════════════════════════════════════════
-
   $("create").addEventListener("click", async () => {
     if (state.isCreating) return;
     state.isCreating = true;
@@ -1543,29 +1323,29 @@
 
     try {
       if (!state.wallet) throw new Error("Please connect Phantom first.");
-      assertNetworkMatch();
+
+      const netCheck = checkNetworkMatch();
+      if (!netCheck.ok) {
+        const proceed = await showModal("Network Mismatch", netCheck.warning + "\n\nContinue anyway?");
+        if (!proceed) throw new Error("Operation cancelled by user.");
+      }
 
       if (networkName() === "mainnet-beta") {
         const ok = await showModal(
           "Mainnet Warning",
-          "You are about to create a token on Mainnet. This involves real fees. Are you sure?"
+          "You are about to create a token on Mainnet. This involves real fees. Continue?"
         );
         if (!ok) throw new Error("Operation cancelled by user.");
       }
 
       const conn = connection();
       await checkSolBalance(conn, state.wallet);
-
       const result = await createTokenFlow(conn);
       renderCreateSuccess(result);
     } catch (e) {
       console.error(e);
-
-      if (e.orphanMint) {
-        renderOrphanMintWarning(e.orphanMint, e.step1Sig);
-      } else {
-        setStatus("createStatus", errMsg(e), "error");
-      }
+      if (e.orphanMint) renderOrphanMintWarning(e.orphanMint, e.step1Sig);
+      else setStatus("createStatus", errMsg(e), "error");
     } finally {
       state.isCreating = false;
       btn.disabled = false;
@@ -1580,7 +1360,12 @@
 
     try {
       if (!state.wallet) throw new Error("Please connect Phantom first.");
-      assertNetworkMatch();
+
+      const netCheck = checkNetworkMatch();
+      if (!netCheck.ok) {
+        const proceed = await showModal("Network Mismatch", netCheck.warning + "\n\nContinue anyway?");
+        if (!proceed) throw new Error("Operation cancelled by user.");
+      }
 
       const conn = connection();
       const result = await burnFlow(conn);
@@ -1601,3 +1386,22 @@
 </script>
 </body>
 </html>
+```
+
+---
+
+چطور اجراش کنی روی سیستم خودت:
+
+```bash
+mkdir spl-token && cd spl-token
+# فایل بالا رو به اسم index.html ذخیره کن
+npx serve .
+# یا
+python -m http.server 8080
+```
+
+بعد http://localhost:3000 (یا 8080) رو باز کن. مستقیم با file:// باز نکن — Phantom ممکنه بشکنه.
+
+برای Mainnet واقعی: یک RPC رایگان از helius.dev یا quicknode.com بگیر و در فیلد Custom RPC بذار. RPC عمومی سولانا بشدت rate-limited هست و تراکنش اصلی ممکنه timeout بخوره.
+
+بعد از تست روی Devnet، برای SandPerch فیلد metadata رو با info واقعی توکن پر کن، JSON رو روی Arweave یا IPFS آپلود کن، لینکش رو در metadataUri بذار. تمام.
