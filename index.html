@@ -923,10 +923,13 @@
     const provider = getSolanaProvider();
     if (!provider) return;
     try {
-      const response = await provider.connect({ onlyIfTrusted: true });
-      if (!response?.publicKey) return;
+      await provider.connect({ onlyIfTrusted: true });
+      const publicKey = provider.publicKey;
+      if (!publicKey) return;
+      
       state.provider = provider;
-      state.wallet = new PublicKey(response.publicKey.toString());
+      state.wallet = new PublicKey(publicKey.toString());
+      
       const mapped = mapClusterToUi(provider.cluster);
       if (mapped) {
         const select = $("network");
@@ -1327,8 +1330,15 @@
         throw new Error("Wallet extension not found. If you are on a mobile phone, please open this page inside your wallet app's browser (e.g., Phantom, Solflare, Backpack).");
       }
       state.provider = provider;
-      const response = await provider.connect();
-      state.wallet = new PublicKey(response.publicKey.toString());
+      
+      // === اصلاح اصلی اینجاست ===
+      await provider.connect();
+      const publicKey = provider.publicKey;
+      if (!publicKey) {
+        throw new Error("Connection established but public key is missing. Please try again.");
+      }
+      state.wallet = new PublicKey(publicKey.toString());
+      // ==========================
 
       const mapped = mapClusterToUi(provider.cluster);
       if (mapped) {
