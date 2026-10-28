@@ -60,7 +60,6 @@
     font: inherit;
   }
   input:focus, select:focus, textarea:focus { border-color: var(--purple); }
-  textarea { min-height: 120px; resize: vertical; direction: ltr; font-family: ui-monospace, monospace; }
   .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
   .check {
     display: flex; gap: 10px; align-items: flex-start;
@@ -224,22 +223,12 @@
       </div>
     </div>
 
-    <label for="metadata">Token Metadata JSON</label>
-    <textarea id="metadata" spellcheck="false">{
-  "name": "Example Token",
-  "symbol": "EXM",
-  "description": "My Solana SPL token",
-  "image": "https://example.com/token.png"
-}</textarea>
+    <label for="metadataUri">Public Metadata JSON URL</label>
+    <input id="metadataUri" type="url" placeholder="https://example.com/token.json">
 
     <p class="small">
-      This JSON must be hosted at a public HTTPS URL (Arweave, IPFS, or your own server).
-      The link is stored on-chain in the Metaplex Metadata Program.
       Note: token names and symbols are <strong>not</strong> unique on Solana — anyone can create a token with the same name.
     </p>
-
-    <label for="metadataUri">Public JSON URL</label>
-    <input id="metadataUri" type="url" placeholder="https://example.com/token.json">
 
     <label class="check">
       <input type="checkbox" id="revokeMint">
@@ -669,22 +658,6 @@
       throw new Error("JSON URL must start with HTTPS.");
     }
 
-    let json;
-    try { json = JSON.parse($("metadata").value); }
-    catch { throw new Error("Metadata JSON is not valid."); }
-
-    if (typeof json.name !== "string" || typeof json.symbol !== "string") {
-      throw new Error("Fields 'name' and 'symbol' in JSON must be strings.");
-    }
-    if (bytesLength(json.name) > MAX_NAME_BYTES || bytesLength(json.symbol) > MAX_SYMBOL_BYTES) {
-      throw new Error("Name or symbol inside JSON is too long.");
-    }
-    if (json.name !== name || json.symbol !== symbol) {
-      throw new Error("Name and symbol must match the JSON exactly.");
-    }
-    if (typeof json.image !== "string" || !json.image.startsWith("https://")) {
-      throw new Error("Field 'image' in JSON must be an HTTPS URL.");
-    }
     if (!Number.isInteger(decimals) || decimals < 0 || decimals > 9) {
       throw new Error("Decimals must be an integer between 0 and 9.");
     }
@@ -793,16 +766,16 @@
   function createMetadataInstruction(mint, authority, uri, name, symbol, isMutable) {
     const metadata = metadataPda(mint);
     const data = concatUint8([
-      new Uint8Array([33]),                 
+      new Uint8Array([33]),
       borshString(name),
       borshString(symbol),
       borshString(uri),
-      u16(0),                               
-      new Uint8Array([0]),                  
-      new Uint8Array([0]),                  
-      new Uint8Array([0]),                  
-      new Uint8Array([isMutable ? 1 : 0]),  
-      new Uint8Array([0]),                  
+      u16(0),
+      new Uint8Array([0]),
+      new Uint8Array([0]),
+      new Uint8Array([0]),
+      new Uint8Array([isMutable ? 1 : 0]),
+      new Uint8Array([0]),
     ]);
 
     return new TransactionInstruction({
@@ -812,7 +785,7 @@
         { pubkey: mint,                    isSigner: false, isWritable: false },
         { pubkey: authority,               isSigner: true,  isWritable: false },
         { pubkey: authority,               isSigner: true,  isWritable: true  },
-        { pubkey: authority,               isSigner: false, isWritable: false }, 
+        { pubkey: authority,               isSigner: false, isWritable: false },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
         { pubkey: SYSVAR_RENT_PUBKEY,      isSigner: false, isWritable: false },
       ],
@@ -820,16 +793,12 @@
     });
   }
 
-  // ═══════════════════════════════════════════════════════════
-  // اصلاح شده: شناسایی تمام کیف پول های استاندارد سولانا
-  // ═══════════════════════════════════════════════════════════
   function getSolanaProvider() {
     if (window.phantom?.solana?.isPhantom) return window.phantom.solana;
     if (window.solflare?.isSolflare) return window.solflare;
     if (window.backpack?.isBackpack) return window.backpack;
     if (window.glow?.isGlow) return window.glow;
-    // حالت generic برای کیف پول هایی مثل Trust Wallet که به صورت استاندارد تزریق می شوند
-    if (window.solana) return window.solana; 
+    if (window.solana) return window.solana;
     return null;
   }
 
@@ -1053,13 +1022,22 @@
       if (!proceed) throw new UserCancelError();
     } else if (preflight.ok === true) {
       const remote = preflight.json || {};
+      const issues = [];
+
       if (remote.name !== name || remote.symbol !== symbol) {
-        const proceed = await showModal(
-          "Metadata mismatch",
-          `The JSON at your URL has different name/symbol than what you entered.\n\n` +
+        issues.push(
           `URL JSON:  ${String(remote.name)} / ${String(remote.symbol)}\n` +
-          `Your entry: ${name} / ${symbol}\n\n` +
-          `On-chain metadata will use YOUR entry. Wallets may show inconsistent info.\n\nContinue anyway?`
+          `Your entry: ${name} / ${symbol}`
+        );
+      }
+      if (typeof remote.image !== "string" || !remote.image) {
+        issues.push("The JSON at your URL is missing an 'image' field. Wallets will show a placeholder.");
+      }
+
+      if (issues.length) {
+        const proceed = await showModal(
+          "Metadata check",
+          issues.join("\n\n") + "\n\nOn-chain metadata will use YOUR name/symbol entry.\n\nContinue anyway?"
         );
         if (!proceed) throw new UserCancelError();
       }
@@ -1389,12 +1367,6 @@
     $("tokenSymbol").value = "";
     $("supply").value = "1000000";
     $("metadataUri").value = "";
-    $("metadata").value = `{
-  "name": "Example Token",
-  "symbol": "EXM",
-  "description": "My Solana SPL token",
-  "image": "https://example.com/token.png"
-}`;
     $("burnMint").value = "";
     $("burnAmount").value = "";
     $("revokeMint").checked = false;
