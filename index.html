@@ -1,13 +1,3 @@
-نسخه نهایی. تغییرات کلیدی نسبت به کد خودت:
-
-1. ۳ CDN جایگزین برای کتابخانهها (esm.sh → jsdelivr → esm.run) با fallback خودکار
-2. سایز metadata از ۹۲۱ به ۶۷۹ اصلاح شد (اجارهی اضافی حذف)
-3. تراکنش ۲ و ۳ ادغام شدن → فقط ۲ پاپآپ Phantom بهجای ۳
-4. Network mismatch فقط warning میشه، نه گیر کردن کاربر
-5. Burn هر توکن اکانتی رو پیدا میکنه، نه فقط ATA
-6. رتری و پیام خطای بهتر
-
-```html
 <!DOCTYPE html>
 <html lang="en" dir="ltr">
 <head>
@@ -142,6 +132,24 @@
   }
   .kv > .k { color: var(--muted); }
   .kv > .v { color: var(--green); overflow-wrap: anywhere; }
+  .boot-loader {
+    position: fixed; inset: 0;
+    background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 9999;
+    color: var(--muted);
+    font-size: 15px;
+    text-align: center;
+  }
+  .boot-spinner {
+    width: 44px; height: 44px;
+    border: 3px solid var(--border);
+    border-top-color: var(--purple);
+    border-radius: 50%;
+    margin: 0 auto 18px;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
   @media (max-width: 580px) {
     .grid { grid-template-columns: 1fr; }
     .panel { padding: 17px; }
@@ -150,6 +158,19 @@
 </head>
 
 <body>
+  <div id="bootLoader" class="boot-loader" aria-live="polite">
+    <div>
+      <div class="boot-spinner"></div>
+      <div class="boot-msg">Loading libraries from CDN...</div>
+    </div>
+  </div>
+
+  <noscript>
+    <div style="padding: 24px; color: #fb7185; font-family: system-ui, sans-serif; line-height: 1.7;">
+      This application requires JavaScript. Please enable it and reload the page.
+    </div>
+  </noscript>
+
 <div class="wrap">
   <header>
     <h1>SPL Token Studio</h1>
@@ -214,6 +235,7 @@
     <p class="small">
       This JSON must be hosted at a public HTTPS URL (Arweave, IPFS, or your own server).
       The link is stored on-chain in the Metaplex Metadata Program.
+      Note: token names and symbols are <strong>not</strong> unique on Solana — anyone can create a token with the same name.
     </p>
 
     <label for="metadataUri">Public JSON URL</label>
@@ -221,17 +243,17 @@
 
     <label class="check">
       <input type="checkbox" id="revokeMint">
-      <span>Revoke mint authority after creation (Mint Authority = None).</span>
+      <span>Revoke mint authority after creation. If unchecked, your wallet can mint more tokens in the future.</span>
     </label>
 
     <label class="check">
       <input type="checkbox" id="revokeFreeze">
-      <span>Revoke freeze authority after creation (Freeze Authority = None).</span>
+      <span>Revoke freeze authority after creation. If unchecked, your wallet can freeze any holder's account in the future. Most legitimate tokens revoke this.</span>
     </label>
 
     <label class="check">
       <input type="checkbox" id="immutableMetadata">
-      <span>Make metadata immutable after creation (is_mutable = false on metadata account).</span>
+      <span>Make metadata immutable after creation. This is permanent — you will never be able to change name, symbol, or URI later.</span>
     </label>
 
     <button id="create">Create Token</button>
@@ -257,7 +279,7 @@
     <h2>Fees &amp; Security</h2>
     <p class="small">
       This site charges no extra fees. Transactions incur Solana network fees and rent for on-chain accounts.
-      Creating an SPL token with metadata typically costs around 0.02–0.03 SOL.
+      Creating an SPL token with metadata typically costs around 0.009–0.012 SOL.
       Please keep this browser tab open until the creation process completes.
     </p>
   </section>
@@ -274,7 +296,29 @@
   </div>
 </div>
 
+<script>
+  // If the module fails to initialize (syntax error, network), inform the user.
+  setTimeout(function () {
+    var loader = document.getElementById("bootLoader");
+    if (loader) {
+      var msg = loader.querySelector(".boot-msg");
+      if (msg) msg.textContent =
+        "Loading is taking longer than expected. Check your internet connection or try a different browser.";
+    }
+  }, 20000);
+</script>
+
 <script type="module">
+  // ═══════════════════════════════════════════════════════════
+  // 0. Error classes
+  // ═══════════════════════════════════════════════════════════
+  class UserCancelError extends Error {
+    constructor(message = "Cancelled by user") {
+      super(message);
+      this.name = "UserCancelError";
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════
   // 1. Library loading with multi-CDN fallback
   // ═══════════════════════════════════════════════════════════
@@ -305,9 +349,7 @@
     document.body.innerHTML =
       `<div style="padding:24px;font-family:system-ui,sans-serif;color:#f5f3ff;background:#0b0914;min-height:100vh">
          <h2 style="color:#fb7185;margin:0 0 12px">Failed to load ${escapeHtml(which)}</h2>
-         <p style="color:#aaa3c2;line-height:1.8;margin:0 0 12px">
-           All CDN fallbacks failed. Common causes:
-         </p>
+         <p style="color:#aaa3c2;line-height:1.8;margin:0 0 12px">All CDN fallbacks failed. Common causes:</p>
          <ul style="color:#aaa3c2;line-height:1.7;margin:0 0 16px;padding-left:20px">
            <li>Network blocked — the app needs access to esm.sh, jsdelivr, or esm.run</li>
            <li>ISP / firewall filtering</li>
@@ -366,10 +408,12 @@
   // 2. Constants
   // ═══════════════════════════════════════════════════════════
   const U64_MAX = 18446744073709551615n;
-  const MIN_SOL_BUFFER = 0.05 * LAMPORTS_PER_SOL;
+  // Buffer for fees + retries. Real network fee is ~0.000015 SOL;
+  // we keep a modest safety margin so failed retries don't drain the wallet.
+  const MIN_SOL_BUFFER = 0.002 * LAMPORTS_PER_SOL;
   const RPC_STORAGE_KEY = "spl_studio_custom_rpc";
+  const RPC_DEBOUNCE_MS = 500;
 
-  // Metaplex Token Metadata MAX_METADATA_LEN — official spec.
   const METADATA_SIZE = 679;
   const MAX_NAME_BYTES = 32;
   const MAX_SYMBOL_BYTES = 10;
@@ -377,6 +421,10 @@
 
   const DEFAULT_FEE_SOL = 5000 / LAMPORTS_PER_SOL;
   const CONFIRM_TIMEOUT_MS = 90_000;
+  const PREFLIGHT_TIMEOUT_MS = 6_000;
+
+  // Dummy base58 blockhash for local fee compilation only.
+  const DUMMY_BLOCKHASH = "11111111111111111111111111111111";
 
   // ═══════════════════════════════════════════════════════════
   // 3. Application state
@@ -392,6 +440,8 @@
     isCreating: false,
     isBurning: false,
     isModalOpen: false,
+    currentModalFinish: null,
+    rpcDebounceId: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -525,8 +575,8 @@
   // 6. Modal
   // ═══════════════════════════════════════════════════════════
   function showModal(title, bodyText, isConfirm = true) {
-    if (state.isModalOpen) {
-      return Promise.reject(new Error("Another dialog is already open."));
+    if (state.isModalOpen && typeof state.currentModalFinish === "function") {
+      try { state.currentModalFinish(false); } catch (_) { /* ignore */ }
     }
     state.isModalOpen = true;
 
@@ -547,14 +597,18 @@
       modal.classList.remove("hidden");
       setTimeout(() => btnConfirm.focus(), 0);
 
+      let done = false;
       const finish = (result) => {
+        if (done) return;
+        done = true;
         modal.classList.add("hidden");
         btnConfirm.removeEventListener("click", onConfirm);
         btnCancel.removeEventListener("click", onCancel);
         document.removeEventListener("keydown", onKey);
         modal.removeEventListener("click", onOverlay);
         state.isModalOpen = false;
-        if (previousFocus?.focus) previousFocus.focus();
+        state.currentModalFinish = null;
+        if (previousFocus?.focus) { try { previousFocus.focus(); } catch (_) {} }
         resolve(result);
       };
 
@@ -563,6 +617,7 @@
       const onKey = (e) => { if (e.key === "Escape") finish(false); };
       const onOverlay = (e) => { if (e.target === modal) finish(false); };
 
+      state.currentModalFinish = finish;
       btnConfirm.addEventListener("click", onConfirm);
       btnCancel.addEventListener("click", onCancel);
       document.addEventListener("keydown", onKey);
@@ -595,7 +650,32 @@
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 8. Validation
+  // 8. Metadata URL preflight
+  // ═══════════════════════════════════════════════════════════
+  async function preflightMetadataUri(uri) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PREFLIGHT_TIMEOUT_MS);
+    try {
+      const res = await fetch(uri, {
+        method: "GET",
+        signal: controller.signal,
+        credentials: "omit",
+        cache: "no-store",
+      });
+      if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
+      let json;
+      try { json = await res.json(); }
+      catch { return { ok: false, reason: "Response is not valid JSON" }; }
+      return { ok: true, json };
+    } catch (e) {
+      return { ok: null, reason: errMsg(e) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // 9. Validation
   // ═══════════════════════════════════════════════════════════
   function validateMetadata() {
     if (!state.wallet) throw new Error("Please connect Phantom first.");
@@ -648,16 +728,14 @@
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 9. Signing pipeline
+  // 10. Signing pipeline
   // ═══════════════════════════════════════════════════════════
-  async function estimateFee(conn, tx, signers) {
+  async function estimateFee(conn, tx) {
     try {
       const temp = new Transaction();
       temp.feePayer = state.wallet;
-      const latest = await conn.getLatestBlockhash({ commitment: "confirmed" });
-      temp.recentBlockhash = latest.blockhash;
+      temp.recentBlockhash = DUMMY_BLOCKHASH;
       temp.instructions = [...tx.instructions];
-      if (signers.length) temp.partialSign(...signers);
       const info = await conn.getFeeForMessage(temp.compileMessage(), { commitment: "confirmed" });
       return info?.value != null ? info.value / LAMPORTS_PER_SOL : DEFAULT_FEE_SOL;
     } catch {
@@ -706,12 +784,12 @@
   async function signAndSend(conn, tx, signers = [], actionLabel = "transaction") {
     if (!state.wallet || !state.provider) throw new Error("Wallet not connected.");
 
-    const feeSol = await estimateFee(conn, tx, signers);
+    const feeSol = await estimateFee(conn, tx);
     const approved = await showModal(
       `Confirm ${actionLabel}`,
       `Estimated network fee: ~${feeSol.toFixed(6)} SOL.\n\nDo you want to continue?`
     );
-    if (!approved) throw new Error("Transaction cancelled by user.");
+    if (!approved) throw new UserCancelError();
 
     const latest = await conn.getLatestBlockhash({ commitment: "confirmed" });
     tx.feePayer = state.wallet;
@@ -727,7 +805,7 @@
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 10. Metaplex metadata
+  // 11. Metaplex metadata
   // ═══════════════════════════════════════════════════════════
   function metadataPda(mint) {
     return PublicKey.findProgramAddressSync(
@@ -775,7 +853,7 @@
         { pubkey: mint,                    isSigner: false, isWritable: false },
         { pubkey: authority,               isSigner: true,  isWritable: false },
         { pubkey: authority,               isSigner: true,  isWritable: true  },
-        { pubkey: authority,               isSigner: true,  isWritable: false },
+        { pubkey: authority,               isSigner: false, isWritable: false }, // update_authority — MUST be non-signer
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
         { pubkey: SYSVAR_RENT_PUBKEY,      isSigner: false, isWritable: false },
       ],
@@ -784,7 +862,7 @@
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 11. Phantom management
+  // 12. Phantom management
   // ═══════════════════════════════════════════════════════════
   function getPhantomProvider() {
     if (window.phantom?.solana?.isPhantom) return window.phantom.solana;
@@ -799,6 +877,12 @@
       if (p) return p;
       await sleep(100);
     }
+    return null;
+  }
+
+  function mapClusterToUi(c) {
+    if (c === "mainnet-beta") return "mainnet-beta";
+    if (c === "devnet") return "devnet";
     return null;
   }
 
@@ -827,7 +911,7 @@
 
     const onDisconnect = () => {
       state.wallet = null;
-      setStatus("walletStatus", "Phantom wallet disconnected.", "error");
+      setStatus("walletStatus", "Phantom wallet disconnected.", "warning");
     };
     const onAccount = async (publicKey) => {
       if (publicKey) {
@@ -835,17 +919,14 @@
         await updateWalletBalanceAndStatus();
       } else {
         state.wallet = null;
-        setStatus("walletStatus", "Wallet disconnected.", "error");
+        setStatus("walletStatus", "Wallet disconnected.", "warning");
       }
     };
     const onConnect = async () => {
       if (!state.provider.publicKey) return;
       state.wallet = new PublicKey(state.provider.publicKey.toString());
-      const c = state.provider.cluster;
-      if (c) {
-        const mapped = c === "mainnet-beta" ? "mainnet-beta" : "devnet";
-        if ($("network").value !== mapped) $("network").value = mapped;
-      }
+      const mapped = mapClusterToUi(state.provider.cluster);
+      if (mapped && $("network").value !== mapped) $("network").value = mapped;
       await updateWalletBalanceAndStatus();
     };
 
@@ -884,21 +965,51 @@
     if (!phantomNet) {
       return { ok: true, warning: "Phantom network unknown. Continuing — make sure it matches the UI." };
     }
-    const uiIsMain = networkName() === "mainnet-beta";
-    const phantomIsMain = phantomNet === "mainnet-beta";
-    if (uiIsMain === phantomIsMain) return { ok: true };
+    const uiNet = networkName();
+
+    if (phantomNet === "testnet") {
+      return {
+        ok: false,
+        warning:
+          "Phantom is on testnet. This app supports devnet and mainnet-beta only.\n\n" +
+          "Switch Phantom's network, then retry.",
+      };
+    }
+
+    const mapped = mapClusterToUi(phantomNet);
+    if (mapped === uiNet) return { ok: true };
+
     return {
       ok: false,
       warning:
-        `Network mismatch!\nUI: ${networkName()}\nPhantom: ${phantomNet}\n\n` +
+        `Network mismatch!\nUI: ${uiNet}\nPhantom: ${phantomNet}\n\n` +
         `If you continue, transactions will likely fail. Switch Phantom's network or change the UI selector.`,
     };
   }
 
-  // ═══════════════════════════════════════════════════════════
-  // 12. Create-token flow (2 transactions)
-  // ═══════════════════════════════════════════════════════════
+  async function tryAutoConnect() {
+    const provider = getPhantomProvider();
+    if (!provider) return;
+    try {
+      const response = await provider.connect({ onlyIfTrusted: true });
+      if (!response?.publicKey) return;
+      state.provider = provider;
+      state.wallet = new PublicKey(response.publicKey.toString());
+      const mapped = mapClusterToUi(provider.cluster);
+      if (mapped) {
+        const select = $("network");
+        if (select.querySelector(`option[value="${mapped}"]`)) select.value = mapped;
+      }
+      setupProviderEvents();
+      await updateWalletBalanceAndStatus();
+    } catch (_) {
+      // Not previously trusted — silent.
+    }
+  }
 
+  // ═══════════════════════════════════════════════════════════
+  // 13. Create-token flow (2 transactions)
+  // ═══════════════════════════════════════════════════════════
   async function checkSolBalance(conn, wallet) {
     const [mintRent, ataRent, metaRent] = await Promise.all([
       conn.getMinimumBalanceForRentExemption(MINT_SIZE),
@@ -949,7 +1060,6 @@
         state.wallet, ata, state.wallet, mint.publicKey, TOKEN_PROGRAM_ID
       ));
     }
-    // MintTo MUST come before revoke of mint authority.
     tx.add(createMintToInstruction(
       mint.publicKey, ata, state.wallet, rawAmount, [], TOKEN_PROGRAM_ID
     ));
@@ -971,6 +1081,34 @@
 
   async function createTokenFlow(conn) {
     const { name, symbol, uri, decimals, raw } = validateMetadata();
+
+    setStatus("createStatus", `Verifying metadata URL...\n${uri}`);
+    const preflight = await preflightMetadataUri(uri);
+
+    if (preflight.ok === false) {
+      const proceed = await showModal(
+        "Metadata URL unreachable",
+        `Could not fetch the JSON at:\n${uri}\n\nReason: ${preflight.reason}\n\n` +
+        `On-chain metadata will point to this URL. If it stays broken, wallets will show ` +
+        `"unknown token" or a missing image.\n\nContinue anyway?`
+      );
+      if (!proceed) throw new UserCancelError();
+    } else if (preflight.ok === true) {
+      const remote = preflight.json || {};
+      if (remote.name !== name || remote.symbol !== symbol) {
+        const proceed = await showModal(
+          "Metadata mismatch",
+          `The JSON at your URL has different name/symbol than what you entered.\n\n` +
+          `URL JSON:  ${String(remote.name)} / ${String(remote.symbol)}\n` +
+          `Your entry: ${name} / ${symbol}\n\n` +
+          `On-chain metadata will use YOUR entry. Wallets may show inconsistent info.\n\nContinue anyway?`
+        );
+        if (!proceed) throw new UserCancelError();
+      }
+    } else {
+      console.warn("Metadata preflight unverifiable:", preflight.reason);
+    }
+
     const mint = Keypair.generate();
     const mintAddress = mint.publicKey.toBase58();
 
@@ -1005,10 +1143,9 @@
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 13. Burn flow (any token account, not just ATA)
+  // 14. Burn flow
   // ═══════════════════════════════════════════════════════════
   async function findBurnableTokenAccount(conn, mint, wallet) {
-    // Prefer the ATA if it has balance.
     const ata = await getAssociatedTokenAddress(mint, wallet, false, TOKEN_PROGRAM_ID);
     const ataInfo = await conn.getAccountInfo(ata);
     if (ataInfo && ataInfo.owner.equals(TOKEN_PROGRAM_ID)) {
@@ -1018,7 +1155,6 @@
       } catch (_) { /* fall through to full scan */ }
     }
 
-    // Full scan of token accounts owned by this wallet for this mint.
     const accounts = await conn.getTokenAccountsByOwner(wallet, { mint }, "confirmed");
     if (!accounts.value.length) {
       throw new Error("No token account with this mint found in your wallet.");
@@ -1074,7 +1210,7 @@
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 14. Success renderers
+  // 15. Success renderers
   // ═══════════════════════════════════════════════════════════
   function buildKv(rows) {
     const kv = document.createElement("div");
@@ -1209,17 +1345,19 @@
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 15. Event handlers — wallet & RPC
+  // 16. Event handlers — wallet & RPC
   // ═══════════════════════════════════════════════════════════
-  $("customRpc").addEventListener("change", () => {
-    invalidateConnection();
-    const info = getCustomRpc();
-    if (info.invalid) {
-      setStatus("walletStatus", "Custom RPC must be a valid https:// URL.", "error");
-      return;
-    }
-    persistRpc();
-    if (state.wallet) updateWalletBalanceAndStatus();
+  $("customRpc").addEventListener("input", () => {
+    clearTimeout(state.rpcDebounceId);
+    state.rpcDebounceId = setTimeout(() => {
+      invalidateConnection();
+      const raw = $("customRpc").value.trim();
+      if (!raw) { persistRpc(); return; }
+      const info = getCustomRpc();
+      if (info.invalid) return;
+      persistRpc();
+      if (state.wallet) updateWalletBalanceAndStatus();
+    }, RPC_DEBOUNCE_MS);
   });
 
   $("testRpc").addEventListener("click", async () => {
@@ -1265,10 +1403,17 @@
       const response = await provider.connect();
       state.wallet = new PublicKey(response.publicKey.toString());
 
-      const c = provider.cluster;
-      if (c) {
-        const mapped = c === "mainnet-beta" ? "mainnet-beta" : "devnet";
-        if ($("network").value !== mapped) $("network").value = mapped;
+      const mapped = mapClusterToUi(provider.cluster);
+      if (mapped) {
+        const select = $("network");
+        if (select.querySelector(`option[value="${mapped}"]`)) select.value = mapped;
+      } else if (provider.cluster === "testnet") {
+        setStatus(
+          "walletStatus",
+          "Phantom is on testnet. This app supports devnet and mainnet-beta only.\n" +
+          "Switch Phantom's network, then retry.",
+          "warning"
+        );
       }
 
       setupProviderEvents();
@@ -1313,7 +1458,7 @@
   });
 
   // ═══════════════════════════════════════════════════════════
-  // 16. Event handlers — create & burn
+  // 17. Event handlers — create & burn
   // ═══════════════════════════════════════════════════════════
   $("create").addEventListener("click", async () => {
     if (state.isCreating) return;
@@ -1327,7 +1472,7 @@
       const netCheck = checkNetworkMatch();
       if (!netCheck.ok) {
         const proceed = await showModal("Network Mismatch", netCheck.warning + "\n\nContinue anyway?");
-        if (!proceed) throw new Error("Operation cancelled by user.");
+        if (!proceed) throw new UserCancelError();
       }
 
       if (networkName() === "mainnet-beta") {
@@ -1335,7 +1480,7 @@
           "Mainnet Warning",
           "You are about to create a token on Mainnet. This involves real fees. Continue?"
         );
-        if (!ok) throw new Error("Operation cancelled by user.");
+        if (!ok) throw new UserCancelError();
       }
 
       const conn = connection();
@@ -1343,9 +1488,14 @@
       const result = await createTokenFlow(conn);
       renderCreateSuccess(result);
     } catch (e) {
-      console.error(e);
-      if (e.orphanMint) renderOrphanMintWarning(e.orphanMint, e.step1Sig);
-      else setStatus("createStatus", errMsg(e), "error");
+      if (e instanceof UserCancelError) {
+        setStatus("createStatus", "Cancelled.", "warning");
+      } else if (e.orphanMint) {
+        renderOrphanMintWarning(e.orphanMint, e.step1Sig);
+      } else {
+        console.error(e);
+        setStatus("createStatus", errMsg(e), "error");
+      }
     } finally {
       state.isCreating = false;
       btn.disabled = false;
@@ -1364,15 +1514,19 @@
       const netCheck = checkNetworkMatch();
       if (!netCheck.ok) {
         const proceed = await showModal("Network Mismatch", netCheck.warning + "\n\nContinue anyway?");
-        if (!proceed) throw new Error("Operation cancelled by user.");
+        if (!proceed) throw new UserCancelError();
       }
 
       const conn = connection();
       const result = await burnFlow(conn);
       renderBurnSuccess(result);
     } catch (e) {
-      console.error(e);
-      setStatus("burnStatus", errMsg(e), "error");
+      if (e instanceof UserCancelError) {
+        setStatus("burnStatus", "Cancelled.", "warning");
+      } else {
+        console.error(e);
+        setStatus("burnStatus", errMsg(e), "error");
+      }
     } finally {
       state.isBurning = false;
       btn.disabled = false;
@@ -1380,28 +1534,13 @@
   });
 
   // ═══════════════════════════════════════════════════════════
-  // 17. Bootstrap
+  // 18. Bootstrap
   // ═══════════════════════════════════════════════════════════
   loadStoredRpc();
+  tryAutoConnect();
+
+  const bootLoader = $("bootLoader");
+  if (bootLoader) bootLoader.remove();
 </script>
 </body>
 </html>
-```
-
----
-
-چطور اجراش کنی روی سیستم خودت:
-
-```bash
-mkdir spl-token && cd spl-token
-# فایل بالا رو به اسم index.html ذخیره کن
-npx serve .
-# یا
-python -m http.server 8080
-```
-
-بعد http://localhost:3000 (یا 8080) رو باز کن. مستقیم با file:// باز نکن — Phantom ممکنه بشکنه.
-
-برای Mainnet واقعی: یک RPC رایگان از helius.dev یا quicknode.com بگیر و در فیلد Custom RPC بذار. RPC عمومی سولانا بشدت rate-limited هست و تراکنش اصلی ممکنه timeout بخوره.
-
-بعد از تست روی Devnet، برای SandPerch فیلد metadata رو با info واقعی توکن پر کن، JSON رو روی Arweave یا IPFS آپلود کن، لینکش رو در metadataUri بذار. تمام.
